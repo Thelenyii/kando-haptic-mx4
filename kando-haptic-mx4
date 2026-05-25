@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+
+import asyncio
+import json
+import os
+import platform
+import subprocess
+
+import websockets
+
+
+HID_COMMAND = [
+    "/opt/haptic-kando/kando-mx4-hid",
+    "-i",
+    "B042",
+    "11FF0B4C03000000000000000000000000000000"
+]
+
+CLIENT_API_VERSION = 1
+
+FAST_RETRY_DELAY = 0.2
+SLOW_RETRY_DELAY = 2
+
+
+def trigger():
+    subprocess.Popen(
+        HID_COMMAND,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+
+def find_ipc_info_path():
+    system = platform.system()
+    home = os.path.expanduser("~")
+
+    if system == "Windows":
+        appdata = os.environ.get(
+            "APPDATA",
+            os.path.join(home, "AppData", "Roaming")
+        )
+
+        return os.path.join(
+            appdata,
+            "kando",
+            "ipc-info.json"
+        )
+
+    elif system == "Darwin":
+        return os.path.join(
+            home,
+            "Library",
+            "Application Support",
+            "kando",
+            "ipc-info.json"
+        )
+
+    flatpak_path = os.path.join(
+        home,
+        ".var",
+        "app",
+        "menu.kando.Kando",
+        "config",
+        "kando",
+        "ipc-info.json"
+    )
+
+    if os.path.exists(flatpak_path):
+        return flatpak_path
+
+    return os.path.join(
+        home,
+        ".config",
+        "kando",
+        "ipc-info.json"
+    )
+
+
+async def load_ipc_info(info_path):
+    while True:
+        try:
+            if not os.path.exists(info_path):
+                print("Waiting for ipc-info.json...")
+                await asyncio.sleep(SLOW_RETRY_DELAY)
+                continue
+
+            with open(info_path, "r") as f:
+                info = json.load(f)
+
+            port = info["port"]
+            api_version = info["apiVersion"]
+
+            if api_version != CLIENT_API_VERSION:
+                print(
+                    "API version mismatch:",
+                    f"server={api_version}",
+                    f"client={CLIENT_API_VERSION}"
+                )
+
+                await asyncio.sleep(SLOW_RETRY_DELAY)
+                continue
+
+            return port
+
+        except Exception as e:
+            print("Failed to load ipc-info.json:", e)
+
+            await asyncio.sleep(SLOW_RETRY_DELAY)
+
+
+async def websocket_loop(uri):
+    async with websockets.connect(
+        uri,
+        ping_interval=20,
+        ping_timeout=20
+    ) as ws:
+
+        print("Connected:", uri)
+
+        await ws.send(json.dumps({
+            "type": "start-observing"
+        }))
+
+        async for message in ws:
+            msg = json.loads(message)
+
+            msg_type = msg.get("type")
+
+            if msg_type in [
+                "open-menu",
+                "cancel-menu",
+                "select-item",
+                "hover-item",
+                "error"
+            ]:
+                trigger()
+
+
+async def main():
+    info_path = find_ipc_info_path()
+
+    while True:
+        try:
+            port = await load_ipc_info(info_path)
+
+            uri = f"ws://127.0.0.1:{port}"
+
+            await websocket_loop(uri)
+
+        except Exception as e:
+            print("Reconnect:", e)
+
+            # швидкий reconnect path
+            await asyncio.sleep(FAST_RETRY_DELAY)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
