@@ -1,13 +1,13 @@
 [Unit]
 Description=Kando Haptic MX4 Service
-After=graphical.target network-online.target
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=%i
 ExecStart=/opt/haptic-kando/kando-haptic-mx4
-Restart=on-failure
+Restart=always
 RestartSec=3
 
 TimeoutStopSec=10
